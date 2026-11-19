@@ -10,7 +10,7 @@ from typing import ClassVar
 import requests
 
 from app.core.context import BackupContext, BackupError, BackupResult
-from app.workers.base import BackupWorker, EnvVarSpec
+from app.workers.base import BackupWorker, EnvVarSpec, skip_reason
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +55,16 @@ class N8nWorker(BackupWorker):
         workflows = self._fetch_all(f"{base_url}/api/v1/workflows", headers)
         tags = self._fetch_all(f"{base_url}/api/v1/tags", headers)
 
-        # Variables endpoint was added in n8n v1.0 — skip gracefully if absent.
+        # Variables need n8n >= 1.0 (404 before) and a licence that includes them (403).
+        # Anything else (5xx, timeout) fails the run rather than dropping them silently.
+        skipped: dict[str, str] = {}
         try:
             variables = self._fetch_all(f"{base_url}/api/v1/variables", headers)
         except BackupError as exc:
-            logger.warning(f"n8n: skipping variables — {exc}")
+            if (reason := skip_reason(exc)) is None:
+                raise
+            logger.warning(f"n8n: skipping variables: {reason}")
+            skipped["variables"] = reason
             variables = []
 
         backup = {
@@ -68,6 +73,7 @@ class N8nWorker(BackupWorker):
             "workflows": workflows,
             "tags": tags,
             "variables": variables,
+            "skipped": skipped,
         }
 
         backup_dir = self.service_backup_dir(context)

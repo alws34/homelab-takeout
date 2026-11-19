@@ -284,7 +284,7 @@ PYTHONPATH=. pytest tests -q
 
 ### Tests
 
-182 tests run in seconds with no network, Docker or live apps (`PYTHONPATH=. pytest
+234 tests run in seconds with no network, Docker or live apps (`PYTHONPATH=. pytest
 tests -q`). They cover:
 
 - **Sign-in and web security:** setup code, password hashing, sessions, lockout,
@@ -299,7 +299,7 @@ tests -q`). They cover:
   passphrase.
 - **Destinations API:** only known settings can be saved, the Google login uses PKCE,
   the OAuth callback refuses forged or reused logins and escapes its error page.
-- **Workers:** 16 of the 21 apps against mocked APIs, plus the shared fetch and
+- **Workers:** 18 of the 21 apps against mocked APIs, plus the shared fetch and
   archive helpers.
 - **Settings and the GUI's API:** `.env` reading and writing (including rejecting
   values that would add lines), adding and removing apps, every app and destination
@@ -307,9 +307,8 @@ tests -q`). They cover:
 
 CI adds a Docker build and smoke test on amd64 and arm64, an install of the systemd
 service, CodeQL and SonarQube Cloud. SFTP, SMB and the Docker image are also tested by
-hand against real servers before releases. Not yet covered: AdGuard Home, Bar
-Assistant, KitchenOwl, Linkwarden and Nginx Proxy Manager have no automated tests, and
-the browser GUI is checked by hand.
+hand against real servers before releases. Not yet covered: AdGuard Home, Linkwarden and
+Nginx Proxy Manager have no automated tests, and the browser GUI is checked by hand.
 
 Dependencies are locked with hashes by [pip-tools](https://pip-tools.readthedocs.io/):
 edit `requirements.in` (or `requirements-dev.in`), then run

@@ -10,7 +10,8 @@ from pydantic import BaseModel
 from app.core.env_manager import EnvManager
 from app.core.registry import WorkerRegistry
 
-_UNKNOWN_TYPE = {404: {"description": "Unknown worker type"}}
+# Sonar (S8415) only reads literal status-code keys in `responses=`, not `**` merges.
+_UNKNOWN_TYPE = {"description": "Unknown worker type"}
 
 
 class EnvVarUpdate(BaseModel):
@@ -23,28 +24,19 @@ def create_router(env_manager: EnvManager, registry: WorkerRegistry) -> APIRoute
     """Return a router exposing env var read and update endpoints per worker."""
     router = APIRouter()
 
-    @router.get("/env-vars/{service_type}", responses=_UNKNOWN_TYPE)
+    @router.get("/env-vars/{service_type}", responses={404: _UNKNOWN_TYPE})
     async def get_env_vars(service_type: str) -> list[dict[str, Any]]:
-        """Return the env var specs and current values for a worker type."""
+        """Return the env var specs and current values (secrets masked) for a worker type."""
         worker_class = registry.get_class(service_type)
         if not worker_class:
             raise HTTPException(status_code=404, detail=f"Unknown worker type '{service_type}'")
         env_values = env_manager.read()
-        return [
-            {
-                "key": spec.key,
-                "label": spec.label,
-                "description": spec.description,
-                "secret": spec.secret,
-                "required": spec.required,
-                "value": env_values.get(spec.key, ""),
-            }
-            for spec in worker_class.env_var_specs
-        ]
+        # describe() masks secrets: the API reports whether one is set, never its value.
+        return [spec.describe(env_values.get(spec.key, "")) for spec in worker_class.env_var_specs]
 
     @router.put(
         "/env-vars/{service_type}",
-        responses={**_UNKNOWN_TYPE, 400: {"description": "Invalid settings"}},
+        responses={404: _UNKNOWN_TYPE, 400: {"description": "Invalid settings"}},
     )
     async def update_env_vars(service_type: str, body: EnvVarUpdate) -> dict:
         """Persist env var updates for a worker after validating the keys."""

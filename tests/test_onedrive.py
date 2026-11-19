@@ -70,10 +70,13 @@ def test_failed_chunk_and_empty_file(env, msal_app, tmp_path: Path):
     with (
         patch.object(onedrive.requests, "request", return_value=session),
         patch.object(onedrive.requests, "put", return_value=_resp(507)),
+        patch.object(onedrive.requests, "delete") as cancel,
     ):
         dest = OneDriveDestination(env)
         with pytest.raises(BackupError, match="upload failed 507"):
             dest.put(src, "n8n")
+    # The half-done upload session is cancelled.
+    cancel.assert_called_once_with("https://upload.example/session", timeout=30)
 
     src.write_bytes(b"")
     with patch.object(onedrive.requests, "request", return_value=_resp(201)) as graph:
@@ -201,3 +204,23 @@ def test_app_loads_saved_token_cache(env, tmp_path: Path):
     cache_cls.return_value.deserialize.assert_called_once_with("{}")
     assert pca.call_args.args == ("cid",)
     assert pca.call_args.kwargs["token_cache"] is cache_cls.return_value
+
+
+def test_connection_error_does_not_leak_the_upload_url(env, msal_app, tmp_path: Path):
+    src = tmp_path / "n8n_20261001_000000.json"
+    src.write_bytes(b"{}")
+    secret_url = "https://upload.example/rup/abc?tempauth=SECRET"
+    session = _resp(body={"uploadUrl": secret_url})
+    dropped = onedrive.requests.ConnectionError(f"Max retries exceeded with url: {secret_url}")
+    with (
+        patch.object(onedrive.requests, "request", return_value=session),
+        patch.object(onedrive.requests, "put", side_effect=dropped),
+        patch.object(onedrive.requests, "delete", side_effect=dropped) as cancel,
+    ):
+        with pytest.raises(BackupError) as caught:
+            OneDriveDestination(env).put(src, "n8n")
+
+    assert "SECRET" not in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert "ConnectionError" in str(caught.value)
+    cancel.assert_called_once()

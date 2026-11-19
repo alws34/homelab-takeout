@@ -72,3 +72,24 @@ def test_update_rejects_values_that_would_add_lines(tmp_path):
     with pytest.raises(ValueError):
         env.update({"WIKIJS_API_TOKEN": "x\nAUTH_MODE=off"})
     assert env.read() == {"WIKIJS_URL": "http://wiki"}
+
+
+@pytest.mark.parametrize("value", ['pa"ss"', "'quoted'", '"', "x'", " padded secret ", "a=b"])
+def test_values_with_quotes_round_trip(tmp_path: Path, value: str) -> None:
+    """A saved secret reads back byte for byte, even with quotes at either end."""
+    mgr = EnvManager(tmp_path / ".env")
+    mgr.update({"SECRET": value})
+    assert mgr.read()["SECRET"] == value
+
+
+def test_hand_written_quoting_still_reads(tmp_path: Path) -> None:
+    """Unquoted, double-quoted and single-quoted lines all give the bare value."""
+    f = tmp_path / ".env"
+    f.write_text('A=plain\nB="double"\nC=\'single\'\nD = "spaced" \nE=""\n')
+    assert EnvManager(f).read() == {
+        "A": "plain",
+        "B": "double",
+        "C": "single",
+        "D": "spaced",
+        "E": "",
+    }

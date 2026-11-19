@@ -5,8 +5,9 @@ Worker type: `n8n` · Method: REST API
 ## What's Backed Up
 
 All workflows, tags, and variables, exported as a single JSON file.
-(The variables endpoint was added in n8n v1.0 — on older instances it's
-skipped gracefully rather than failing the backup.)
+(Variables need n8n v1.0 or later and a licence that includes them. When the
+endpoint answers 404 or 403 they are left out and the file's `skipped` field says
+why; any other error fails the run instead of dropping them silently.)
 
 ## Setup
 

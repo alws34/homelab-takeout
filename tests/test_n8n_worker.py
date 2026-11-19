@@ -124,7 +124,11 @@ def test_variables_endpoint_failure_skipped(context: BackupContext) -> None:
 
     worker = N8nWorker(SERVICE_CONFIG)
     error_resp = MagicMock()
-    error_resp.raise_for_status.side_effect = req_lib.HTTPError("404 Not Found")
+    error_resp.status_code = 404
+    error_resp.text = "Not Found"
+    error_resp.raise_for_status.side_effect = req_lib.HTTPError(
+        "404 Not Found", response=error_resp
+    )
     side_effects = [
         _mock_response(MOCK_WORKFLOWS),
         _mock_response(MOCK_TAGS),
@@ -136,6 +140,23 @@ def test_variables_endpoint_failure_skipped(context: BackupContext) -> None:
     assert result.success is True
     saved = json.loads(result.output_files[0].read_text())
     assert saved["variables"] == []
+    assert saved["skipped"] == {"variables": "HTTP 404: Not Found"}
+
+
+@pytest.mark.parametrize("status", [500, 503])
+def test_variables_server_error_fails_the_run(context: BackupContext, status: int) -> None:
+    """Only 403/404 are skippable: a 5xx must not drop the variables silently."""
+    import requests as req_lib
+
+    worker = N8nWorker(SERVICE_CONFIG)
+    error_resp = MagicMock()
+    error_resp.status_code = status
+    error_resp.raise_for_status.side_effect = req_lib.HTTPError(f"{status}", response=error_resp)
+    side_effects = [_mock_response(MOCK_WORKFLOWS), _mock_response(MOCK_TAGS), error_resp]
+    with patch("app.workers.n8n.requests.get", side_effect=side_effects):
+        with pytest.raises(BackupError, match="variables"):
+            worker.run(context)
+    assert not list(context.backup_root.glob("**/*.json"))
 
 
 def test_http_error_raises(context: BackupContext) -> None:

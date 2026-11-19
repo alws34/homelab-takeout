@@ -1,5 +1,6 @@
 """Tests for GUI login: setup code, sessions, lockout, password change, proxy/off modes."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -143,6 +144,20 @@ async def test_login_lockout_and_logout(make_app, monkeypatch):
     assert (await call(app, "GET", "/api/settings", cookie=token))[0] == 401
 
 
+async def test_parallel_guesses_cannot_outrun_the_lockout(make_app):
+    app, auth = make_app()
+    auth.set_password(PASSWORD)
+    guess = {"password": "nope nope nope"}
+
+    results = await asyncio.gather(
+        *(call(app, "POST", "/api/auth/login", guess) for _ in range(3 * auth_module.MAX_FAILURES))
+    )
+
+    statuses = [status for status, _, _ in results]
+    assert statuses.count(401) == auth_module.MAX_FAILURES
+    assert statuses.count(429) == 2 * auth_module.MAX_FAILURES
+
+
 async def test_password_change_signs_out_other_sessions(make_app):
     app, auth = make_app()
     auth.set_password(PASSWORD)
@@ -209,3 +224,17 @@ async def test_page_and_static_stay_public(make_app):
     app, _ = make_app()
     assert (await call(app, "GET", "/"))[0] == 200
     assert (await call(app, "GET", "/static/app.js"))[0] == 200
+
+
+async def test_status_shows_proxy_settings_only_when_signed_in(make_app):
+    app, _ = make_app({"AUTH_MODE": "proxy", "AUTH_TRUSTED_PROXIES": "10.0.0.5"})
+
+    _, _, anonymous = await call(app, "GET", "/api/auth/status", client=LAN)
+    as_user = {"remote-user": "alon"}
+    _, _, signed_in = await call(app, "GET", "/api/auth/status", client="10.0.0.5", headers=as_user)
+
+    assert anonymous["mode"] == "proxy"
+    assert anonymous["trusted_proxies"] == ""
+    assert anonymous["proxy_header"] == ""
+    assert signed_in["trusted_proxies"] == "10.0.0.5/32"
+    assert signed_in["proxy_header"] == "Remote-User"

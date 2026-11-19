@@ -32,6 +32,14 @@ def _resp(data: object) -> MagicMock:
     return r
 
 
+def _error(status: int, text: str) -> MagicMock:
+    """A response whose raise_for_status() raises like requests does, with the status."""
+    r = MagicMock()
+    r.status_code = status
+    r.raise_for_status.side_effect = requests.HTTPError(text, response=r)
+    return r
+
+
 def _coll(elements: list, total: int | None = None) -> MagicMock:
     total = len(elements) if total is None else total
     return _resp({"total": total, "count": len(elements), "_embedded": {"elements": elements}})
@@ -88,8 +96,7 @@ def test_exports_everything_and_pages_by_offset(tmp_path: Path) -> None:
 
 
 def test_bad_token_gives_actionable_error(tmp_path: Path) -> None:
-    resp = MagicMock()
-    resp.raise_for_status.side_effect = requests.HTTPError("401 Client Error: Unauthorized")
+    resp = _error(401, "401 Client Error: Unauthorized")
 
     with patch("requests.Session.request", return_value=resp):
         worker = OpenProjectWorker({"name": "openproject", "type": "openproject"})
@@ -99,8 +106,7 @@ def test_bad_token_gives_actionable_error(tmp_path: Path) -> None:
 
 
 def test_sections_the_token_cannot_see_are_skipped(tmp_path: Path) -> None:
-    forbidden = MagicMock()
-    forbidden.raise_for_status.side_effect = requests.HTTPError("403 Client Error: Forbidden")
+    forbidden = _error(403, "403 Client Error: Forbidden")
 
     def route(method: str, url: str, **kw: object) -> MagicMock:
         if url.endswith(("/time_entries", "/queries")):
@@ -115,3 +121,17 @@ def test_sections_the_token_cannot_see_are_skipped(tmp_path: Path) -> None:
     assert files["time_entries"] == []
     assert files["queries"] == []
     assert set(files["skipped"]) == {"time_entries", "queries"}
+
+
+def test_a_server_error_in_an_optional_section_is_not_taken_for_403(tmp_path: Path) -> None:
+    """The URL is in the error text: a server on port 8403 must not look like a 403."""
+    broken = _error(500, "500 Server Error for url: http://op:8403/api/v3/time_entries")
+
+    def route(method: str, url: str, **kw: object) -> MagicMock:
+        return broken if url.endswith("/time_entries") else _coll([])
+
+    with patch("requests.Session.request", side_effect=route):
+        worker = OpenProjectWorker({"name": "openproject", "type": "openproject"})
+        ctx = _ctx(tmp_path)
+        with pytest.raises(BackupError, match="500"):
+            worker.run(ctx)

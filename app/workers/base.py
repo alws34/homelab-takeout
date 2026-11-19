@@ -33,6 +33,42 @@ def fetch_json(session: requests.Session, method: str, url: str, **kwargs: objec
         raise BackupError(f"{method} {url} returned non-JSON: {resp.text[:200]!r}") from e
 
 
+def _http_response(error: BaseException) -> requests.Response | None:
+    """The response behind an ``HTTPError``, raw or wrapped in a ``BackupError``."""
+    for e in (error, error.__cause__):
+        if isinstance(e, requests.HTTPError) and e.response is not None:
+            return e.response
+    return None
+
+
+def http_status(error: BaseException) -> int | None:
+    """The HTTP status behind an error, or None (timeout, refused, bad JSON).
+
+    Use this rather than looking for "403" in the message: the message also holds the
+    URL, so a server on port 8403 would match.
+    """
+    response = _http_response(error)
+    return response.status_code if response is not None else None
+
+
+# An optional section answering 403 (this key may not see it) or 404 (this version of
+# the app doesn't have it) is left out and listed in skipped.json.
+SKIPPABLE_STATUSES = frozenset({403, 404})
+
+
+def skip_reason(error: BaseException) -> str | None:
+    """Why a failed optional section may be left out, or None if the run must fail.
+
+    Anything but 403/404 (a 5xx, a timeout, an HTML page instead of JSON) means the data
+    exists but this run didn't get it. Reporting that run as a success would let remote
+    retention prune complete backups in favour of an incomplete one.
+    """
+    response = _http_response(error)
+    if response is None or response.status_code not in SKIPPABLE_STATUSES:
+        return None
+    return f"HTTP {response.status_code}: {response.text[:200]}"
+
+
 @dataclass
 class EnvVarSpec:
     """Describes one environment variable a worker or destination requires."""
@@ -121,27 +157,31 @@ class BackupWorker(ABC):
         self, context: BackupContext, started_at: datetime, files: dict[str, object]
     ) -> BackupResult:
         """Write ``{name: data}`` as JSON files into one tar.gz and apply retention."""
-        backup_dir = self.service_backup_dir(context)
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        stem = f"{self.service_name}_{started_at.strftime('%Y%m%d_%H%M%S')}"
-        archive = backup_dir / f"{stem}.tar.gz"
-
+        counts = ", ".join(f"{len(v)} {k}" for k, v in files.items() if isinstance(v, list))
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             for name, data in files.items():
                 (work / f"{name}.json").write_text(json.dumps(data, indent=2, ensure_ascii=False))
-            with tarfile.open(archive, "w:gz") as tar:
-                tar.add(work, arcname=stem)
+            return self.archive_dir(context, started_at, work, counts or "exported")
 
+    def archive_dir(
+        self, context: BackupContext, started_at: datetime, work: Path, summary: str
+    ) -> BackupResult:
+        """Pack ``work`` into one tar.gz (mode 600), apply retention and report ``summary``."""
+        backup_dir = self.service_backup_dir(context)
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stem = f"{self.service_name}_{started_at.strftime('%Y%m%d_%H%M%S')}"
+        archive = backup_dir / f"{stem}.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(work, arcname=stem)
         archive.chmod(0o600)
         self.cleanup_old_files(backup_dir, f"{self.service_name}_*.tar.gz", context.retention_days)
 
-        counts = ", ".join(f"{len(v)} {k}" for k, v in files.items() if isinstance(v, list))
         return BackupResult(
             service_name=self.service_name,
             worker_type=self.worker_type,
             success=True,
-            message=f"{counts or 'exported'}: {archive.name} ({archive.stat().st_size} bytes)",
+            message=f"{summary}: {archive.name} ({archive.stat().st_size} bytes)",
             output_files=[archive],
             started_at=started_at,
             finished_at=datetime.now(),

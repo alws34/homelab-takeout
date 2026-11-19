@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import tarfile
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +12,7 @@ from typing import ClassVar
 import requests
 
 from app.core.context import BackupContext, BackupError, BackupResult
-from app.workers.base import BackupWorker, EnvVarSpec
+from app.workers.base import BackupWorker, EnvVarSpec, skip_reason
 
 logger = logging.getLogger(__name__)
 
@@ -81,78 +80,71 @@ class SnipeItWorker(BackupWorker):
             "Content-Type": "application/json",
         }
 
-        def fetch_all(endpoint: str) -> list:
-            records: list = []
-            offset = 0
-            while True:
-                resp = requests.get(
-                    f"{base_url}/api/v1/{endpoint}",
-                    headers=headers,
-                    params={"limit": _PAGE_SIZE, "offset": offset},
-                    timeout=60,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                if offset == 0:
-                    keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
-                    logger.info(f"snipeit: {endpoint} response keys: {keys}")
-                # Snipe-IT uses "rows" at the top level.
-                if isinstance(data, list):
-                    return data
-                rows = data.get("rows") or data.get("data") or []
-                records.extend(rows)
-                total = data.get("total", len(records))
-                offset += len(rows)
-                if not rows or offset >= total:
-                    break
-            return records
-
-        backup_dir = self.service_backup_dir(context)
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = started_at.strftime("%Y%m%d_%H%M%S")
-        total_records = 0
-        failed: list[str] = []
-
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            for endpoint in _ENDPOINTS:
-                try:
-                    records = fetch_all(endpoint)
-                    out = work / f"{endpoint}.json"
-                    out.write_text(json.dumps(records, indent=2, ensure_ascii=False))
-                    logger.info(f"snipeit: {endpoint}: {len(records)} records")
-                    total_records += len(records)
-                except requests.HTTPError as e:
-                    if e.response is not None and e.response.status_code == 401:
-                        raise BackupError(
-                            "SNIPEIT_API_KEY is invalid or expired (401 Unauthorized)"
-                        ) from e
-                    logger.warning(f"snipeit: skipping {endpoint}: {e}")
-                    (work / f"{endpoint}.json").write_text("[]")
-                    failed.append(endpoint)
-                except requests.RequestException as e:
-                    logger.warning(f"snipeit: skipping {endpoint}: {e}")
-                    (work / f"{endpoint}.json").write_text("[]")
-                    failed.append(endpoint)
+            skipped: dict[str, str] = {}
+            counts = [
+                _export(base_url, headers, endpoint, work, skipped) for endpoint in _ENDPOINTS
+            ]
+            if all(count is None for count in counts):
+                raise BackupError(
+                    f"Every Snipe-IT endpoint answered 403/404; check SNIPEIT_URL ({base_url})"
+                )
+            (work / "skipped.json").write_text(json.dumps(skipped, indent=2))
+            total_records = sum(count or 0 for count in counts)
+            return self.archive_dir(context, started_at, work, f"{total_records} records exported")
 
-            if len(failed) == len(_ENDPOINTS):
-                raise BackupError(f"All Snipe-IT endpoints failed; check SNIPEIT_URL ({base_url})")
 
-            archive = backup_dir / f"{self.service_name}_{timestamp}.tar.gz"
-            with tarfile.open(archive, "w:gz") as tar:
-                tar.add(work, arcname=f"{self.service_name}_{timestamp}")
-
-        archive.chmod(0o600)
-        self.cleanup_old_files(backup_dir, f"{self.service_name}_*.tar.gz", context.retention_days)
-
-        return BackupResult(
-            service_name=self.service_name,
-            worker_type=self.worker_type,
-            success=True,
-            message=(
-                f"{total_records} records exported: {archive.name} ({archive.stat().st_size} bytes)"
-            ),
-            output_files=[archive],
-            started_at=started_at,
-            finished_at=datetime.now(),
+def _fetch_all(base_url: str, headers: dict, endpoint: str) -> list:
+    """Return every record of one endpoint, following Snipe-IT's offset pagination."""
+    records: list = []
+    offset = 0
+    while True:
+        resp = requests.get(
+            f"{base_url}/api/v1/{endpoint}",
+            headers=headers,
+            params={"limit": _PAGE_SIZE, "offset": offset},
+            timeout=60,
         )
+        resp.raise_for_status()
+        data = resp.json()
+        if offset == 0:
+            keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
+            logger.info(f"snipeit: {endpoint} response keys: {keys}")
+        # Snipe-IT uses "rows" at the top level.
+        if isinstance(data, list):
+            return data
+        rows = data.get("rows") or data.get("data") or []
+        records.extend(rows)
+        offset += len(rows)
+        if not rows or offset >= data.get("total", len(records)):
+            return records
+
+
+def _export(
+    base_url: str, headers: dict, endpoint: str, work: Path, skipped: dict[str, str]
+) -> int | None:
+    """Write one endpoint to ``<endpoint>.json``; return its record count, None if skipped.
+
+    An endpoint answering 403/404 is written as ``[]`` and recorded in ``skipped``; any
+    other error fails the run.
+    """
+    out = work / f"{endpoint}.json"
+    try:
+        records = _fetch_all(base_url, headers, endpoint)
+    except requests.RequestException as e:
+        if isinstance(e, requests.HTTPError) and _unauthorized(e):
+            raise BackupError("SNIPEIT_API_KEY is invalid or expired (401 Unauthorized)") from e
+        if (reason := skip_reason(e)) is None:
+            raise BackupError(f"Snipe-IT {endpoint} failed: {e}") from e
+        logger.warning(f"snipeit: skipping {endpoint}: {reason}")
+        skipped[endpoint] = reason
+        out.write_text("[]")
+        return None
+    out.write_text(json.dumps(records, indent=2, ensure_ascii=False))
+    logger.info(f"snipeit: {endpoint}: {len(records)} records")
+    return len(records)
+
+
+def _unauthorized(error: requests.HTTPError) -> bool:
+    return error.response is not None and error.response.status_code == 401

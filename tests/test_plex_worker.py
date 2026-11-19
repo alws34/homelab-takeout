@@ -102,9 +102,11 @@ def test_plex_export(tmp_path: Path) -> None:
 
 
 def test_bad_token_says_so(tmp_path: Path) -> None:
-    err = requests.HTTPError("401 Client Error: Unauthorized")
     resp = MagicMock()
-    resp.raise_for_status.side_effect = err
+    resp.status_code = 401
+    resp.raise_for_status.side_effect = requests.HTTPError(
+        "401 Client Error: Unauthorized", response=resp
+    )
     with patch("requests.Session.request", return_value=resp):
         worker = PlexWorker({"name": "plex", "type": "plex"})
         ctx = _ctx(tmp_path)

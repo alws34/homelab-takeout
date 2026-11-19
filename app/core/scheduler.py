@@ -55,6 +55,8 @@ class BackupScheduler:
         self.env_manager = env_manager
         self._config: dict[str, Any] = {}
         self._running: dict[str, bool] = {}
+        # Set when the schedule changes, so run_forever stops waiting for the old time.
+        self._schedule_changed = asyncio.Event()
 
     def load_config(self) -> None:
         """Load the JSON service configuration, creating it on first start."""
@@ -118,6 +120,7 @@ class BackupScheduler:
         retention["remote_keep_count"] = remote_keep_count
         retention.pop("drive_keep_count", None)  # old name, from when Drive was the only option
         self._save_config()
+        self._schedule_changed.set()
 
     def _remote_keep_count(self) -> int:
         retention = self._config.get("retention", {})
@@ -211,10 +214,14 @@ class BackupScheduler:
         if self._config.get("schedule", {}).get("run_on_start", False):
             await self._run_all_services()
         while True:
+            self._schedule_changed.clear()
             seconds = self._seconds_until_next_run()
             logger.info(f"Next scheduled backup in {seconds / _SECONDS_PER_HOUR:.1f} hours")
-            await asyncio.sleep(seconds)
-            await self._run_all_services()
+            try:
+                await asyncio.wait_for(self._schedule_changed.wait(), timeout=seconds)
+            except TimeoutError:
+                await self._run_all_services()
+            # Otherwise the schedule was edited: work out the next run time again.
 
     async def _run_all_services(self) -> None:
         services = self._config.get("services", [])
@@ -257,7 +264,7 @@ class BackupScheduler:
                 logger.error(f"[{name}] Backup reported failure: {result.message}")
             return result
         except BackupError as e:
-            logger.error(f"[{name}] BackupError: {e}")
+            logger.exception(f"[{name}] BackupError: {e}")
             self._persist_error_state(name, str(e))
             return None
         except Exception as e:

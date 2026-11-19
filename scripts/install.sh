@@ -122,13 +122,17 @@ fi
 
 # ── Optional: Bitwarden CLI for the Vaultwarden worker ───────────────────────
 if [ "$with_bw" = 1 ]; then
-    bw_version=$(sed -n 's/^ARG BW_CLI_VERSION=//p' "$REPO/Dockerfile")
-    [ -n "$bw_version" ] || die "could not read BW_CLI_VERSION from Dockerfile"
+    bw_version=$(sed -n 's|.*"@bitwarden/cli": *"\([^"]*\)".*|\1|p' "$REPO/bw/package.json")
+    [ -n "$bw_version" ] || die "could not read the @bitwarden/cli version from bw/package.json"
     if command -v npm >/dev/null 2>&1; then
         npm_cache=$(mktemp -d)
         rm -rf "$PREFIX/bw"
-        npm install --global --prefix "$PREFIX/bw" --cache "$npm_cache" \
-            --no-fund --no-audit --loglevel=error "@bitwarden/cli@$bw_version"
+        install -d -m 755 "$PREFIX/bw" "$PREFIX/bw/bin"
+        cp "$REPO/bw/package.json" "$REPO/bw/package-lock.json" "$PREFIX/bw/"
+        # As in the Dockerfile: the CLI and every transitive dependency come from the lock.
+        npm ci --prefix "$PREFIX/bw" --omit=dev --ignore-scripts --cache "$npm_cache" \
+            --no-fund --no-audit --loglevel=error
+        ln -s ../node_modules/.bin/bw "$PREFIX/bw/bin/bw"
         rm -rf "$npm_cache"
         echo "Installed Bitwarden CLI $bw_version to $PREFIX/bw"
     else
@@ -155,9 +159,10 @@ Homelab Takeout is installed and running.
   Logs:     journalctl -u $NAME -f   (per-run logs in $LOG_DIR)
 
 Next steps:
-  1. Open the GUI and fill in the URLs and API keys of the services you back up.
-  2. Using a hostname instead of an IP? Add it to ALLOWED_HOSTS in the GUI or $CONF_DIR/.env.
-  3. The GUI has no login: keep it on your LAN or behind an auth proxy.
+  1. Open the GUI and create the admin password. It asks for a one-time setup code,
+     printed in the log (journalctl -u $NAME) and saved in $DATA_DIR/state/setup-code.txt.
+  2. Add the apps you back up and fill in their URLs and API keys.
+  3. Keep the GUI on your LAN, behind a VPN or behind an auth proxy.
 EOF
 if [ ! -x "$PREFIX/bw/bin/bw" ]; then
     echo "  4. Backing up Vaultwarden? Re-run with --with-bitwarden (needs Node.js + npm)."
