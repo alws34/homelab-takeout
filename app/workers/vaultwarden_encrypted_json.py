@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
+import time
 from datetime import datetime
 from typing import ClassVar
 
 from app.core.context import BackupContext, BackupError, BackupResult
 from app.workers.base import BackupWorker, EnvVarSpec
+
+# The bw CLI (Node.js) resolves names itself, so app.core.dns_retry doesn't cover it:
+# retry its network steps when the lookup failed only for now (EAI_AGAIN).
+_BW_DNS_RETRY_DELAYS = (2.0, 5.0, 10.0)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +71,23 @@ class VaultwardenEncryptedJsonWorker(BackupWorker):
         ),
     ]
 
+    def _run_bw_network(
+        self,
+        command: list[str],
+        env: dict[str, str],
+        redacted_command: list[str] | None = None,
+    ) -> subprocess.CompletedProcess:
+        """Run a bw step that talks to the server, retrying temporary DNS failures."""
+        for delay in _BW_DNS_RETRY_DELAYS:
+            try:
+                return self.run_command(command, env=env, redacted_command=redacted_command)
+            except BackupError as e:
+                if "EAI_AGAIN" not in str(e):
+                    raise
+                logger.warning(f"[{self.service_name}] DNS lookup failed for now; retrying bw")
+                time.sleep(delay)
+        return self.run_command(command, env=env, redacted_command=redacted_command)
+
     def run(self, context: BackupContext) -> BackupResult:
         """Log in via API key, unlock, sync, and write an encrypted JSON export.
 
@@ -110,7 +133,7 @@ class VaultwardenEncryptedJsonWorker(BackupWorker):
 
             self.run_command([bw, "logout"], env=base_env, check=False)
 
-            self.run_command(
+            self._run_bw_network(
                 [bw, "login", "--apikey"],
                 env=base_env,
                 redacted_command=[bw, "login", "--apikey", "[credentials redacted]"],
@@ -127,7 +150,7 @@ class VaultwardenEncryptedJsonWorker(BackupWorker):
 
             session_env = {**base_env, "BW_SESSION": session_token}
 
-            self.run_command([bw, "sync"], env=session_env)
+            self._run_bw_network([bw, "sync"], env=session_env)
 
             self.run_command(
                 [

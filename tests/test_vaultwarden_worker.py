@@ -88,3 +88,46 @@ def test_secrets_not_in_env_var_labels() -> None:
     assert len(secret_specs) == 3  # client secret, master password, export password
     for s in secret_specs:
         assert s.key in {"BW_CLIENTSECRET", "BW_PASSWORD", "VAULTWARDEN_EXPORT_PASSWORD"}
+
+
+def test_bw_network_steps_retry_temporary_dns_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    """bw (Node) resolves names itself: an EAI_AGAIN from login/sync is retried."""
+    from app.workers import vaultwarden_encrypted_json as vw
+
+    worker = VaultwardenEncryptedJsonWorker(SERVICE_CONFIG)
+    dns = BackupError("stderr: FetchError: ... reason: getaddrinfo EAI_AGAIN vault.example")
+    results = iter([dns, dns, "done"])
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> str:
+        calls.append(command)
+        outcome = next(results)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    waits: list[float] = []
+    monkeypatch.setattr(worker, "run_command", fake_run)
+    monkeypatch.setattr(vw.time, "sleep", waits.append)
+
+    assert worker._run_bw_network(["bw", "sync"], env={}) == "done"
+    assert len(calls) == 3
+    assert waits == [2.0, 5.0]
+
+
+def test_bw_other_errors_are_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.workers import vaultwarden_encrypted_json as vw
+
+    worker = VaultwardenEncryptedJsonWorker(SERVICE_CONFIG)
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> str:
+        calls.append(command)
+        raise BackupError("stderr: Username or password is incorrect.")
+
+    monkeypatch.setattr(worker, "run_command", fake_run)
+    monkeypatch.setattr(vw.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(BackupError, match="incorrect"):
+        worker._run_bw_network(["bw", "login", "--apikey"], env={})
+    assert len(calls) == 1

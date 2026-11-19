@@ -284,7 +284,7 @@ PYTHONPATH=. pytest tests -q
 
 ### Tests
 
-234 tests run in seconds with no network, Docker or live apps (`PYTHONPATH=. pytest
+241 tests run in seconds with no network, Docker or live apps (`PYTHONPATH=. pytest
 tests -q`). They cover:
 
 - **Sign-in and web security:** setup code, password hashing, sessions, lockout,
