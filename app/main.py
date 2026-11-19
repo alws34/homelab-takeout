@@ -12,6 +12,7 @@ import uvicorn
 
 from app.api.auth import AuthManager
 from app.api.server import create_app
+from app.core import dns_retry
 from app.core.env_manager import EnvManager
 from app.core.registry import create_default_registry
 from app.core.scheduler import BackupScheduler
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     """Build the scheduler and web server, then run both until interrupted."""
+    # Start-up bursts of lookups can hit a rate-limiting local resolver: retry those.
+    dns_retry.install()
     config_file = os.environ.get("CONFIG_FILE", "/config/services.json")
     env_file_path = os.environ.get("ENV_FILE", "")
 
