@@ -235,3 +235,43 @@ async def test_schedule_change_takes_effect_without_waiting_for_the_old_time(
     task.cancel()
 
     assert runs == ["run"]
+
+
+async def test_one_run_is_one_history_entry_with_its_upload_result(
+    config_file: Path,
+    registry: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The state is written before and after uploading; history must count the run once,
+    and a failed upload must not leave an earlier entry that looks delivered."""
+    monkeypatch.setenv("BACKUP_ROOT", str(tmp_path / "backups"))
+    monkeypatch.setenv("STATE_ROOT", str(tmp_path / "state"))
+    scheduler = BackupScheduler(str(config_file), registry)
+    scheduler.load_config()
+    failed = {"google_drive": {"ok": False, "message": "Unable to find the server"}}
+    monkeypatch.setattr(scheduler, "_upload_to_destinations", lambda result, context: failed)
+    svc = {"name": "svc1", "type": "dummy", "enabled": True, "options": {}}
+    runs = iter(range(2))
+
+    def fresh_result(context: object) -> BackupResult:
+        minute = next(runs)
+        return BackupResult(
+            service_name="svc1",
+            worker_type="dummy",
+            success=True,
+            message="ok",
+            output_files=[],
+            started_at=datetime(2026, 11, 19, 3, minute),
+            finished_at=datetime(2026, 11, 19, 3, minute, 30),
+        )
+
+    registry.create.return_value.run.side_effect = fresh_result
+
+    await scheduler.run_service(svc)
+    await scheduler.run_service(svc)
+
+    history = scheduler.get_state("svc1")["history"]
+    assert len(history) == 2
+    assert [h["delivered"] for h in history] == [False, False]
+    assert all(h["success"] for h in history)
