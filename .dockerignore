@@ -1,0 +1,22 @@
+# The Dockerfile only copies app/, bw/, requirements.txt and entrypoint.sh. Keep user
+# data and secrets out of the build context entirely, so they are never sent to the
+# Docker daemon or a remote builder.
+.env
+.env.*
+!.env.example
+config/
+backups/
+logs/
+state/
+.git/
+.github/
+**/__pycache__/
+**/*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+node_modules/
