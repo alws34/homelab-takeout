@@ -131,3 +131,45 @@ def test_env_var_specs_defined() -> None:
     assert "WIKIJS_API_TOKEN" in keys
     token_spec = next(s for s in specs if s.key == "WIKIJS_API_TOKEN")
     assert token_spec.secret is True
+
+
+def _page(page_id: int, path: str, locale: str, content: str) -> dict:
+    return {"id": page_id, "path": path, "locale": locale, "content": content}
+
+
+def _responses(pages: list[dict]) -> list[MagicMock]:
+    listing = MagicMock()
+    listing.json.return_value = {"data": {"pages": {"list": pages}}}
+    singles = []
+    for page in pages:
+        single = MagicMock()
+        single.json.return_value = {"data": {"pages": {"single": page}}}
+        singles.append(single)
+    return [listing, *singles]
+
+
+def test_same_path_in_two_languages_keeps_both(context: BackupContext) -> None:
+    pages = [_page(1, "home", "en", "Welcome"), _page(2, "home", "de", "Willkommen")]
+    with patch("app.workers.wikijs.requests.post", side_effect=_responses(pages)):
+        result = WikiJsWorker(SERVICE_CONFIG).run(context)
+
+    with tarfile.open(result.output_files[0], "r:gz") as tar:
+        en = tar.extractfile("wikijs_export/en/home.md").read().decode()
+        de = tar.extractfile("wikijs_export/de/home.md").read().decode()
+    assert (en, de) == ("Welcome", "Willkommen")
+    # Pages are staged outside the backups folder: only the archive is left there.
+    assert [p.name for p in result.output_files[0].parent.iterdir()] == [
+        result.output_files[0].name
+    ]
+
+
+@pytest.mark.parametrize("path", ["../../escaped", "/etc/escaped"])
+def test_page_paths_cannot_escape_the_export(context: BackupContext, path: str) -> None:
+    pages = [_page(1, path, "en", "x")]
+    with patch("app.workers.wikijs.requests.post", side_effect=_responses(pages)):
+        with pytest.raises(BackupError, match="outside the export"):
+            WikiJsWorker(SERVICE_CONFIG).run(context)
+
+    backups = context.backup_root / "wikijs"
+    assert not list(backups.iterdir())  # no stray pages or half-written archive
+    assert not list(context.backup_root.parent.glob("**/escaped.md"))

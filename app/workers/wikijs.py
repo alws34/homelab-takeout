@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-import shutil
 import tarfile
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
@@ -23,6 +23,7 @@ query {
       id
       title
       path
+      locale
       updatedAt
       isPublished
     }
@@ -37,6 +38,7 @@ query ($id: Int!) {
       id
       title
       path
+      locale
       content
       contentType
       updatedAt
@@ -91,19 +93,22 @@ class WikiJsWorker(BackupWorker):
             logger.info(f"[{self.service_name}] Found {len(pages)} pages to export")
 
             timestamp = started_at.strftime("%Y%m%d_%H%M%S")
-            export_dir = backup_dir / f"{self.service_name}_export_{timestamp}"
-            export_dir.mkdir(parents=True, exist_ok=True)
-
-            for page in pages:
-                page_data = self._fetch_page(graphql_url, headers, page["id"])
-                self._write_page(export_dir, page_data)
-
             output_file = backup_dir / f"{self.service_name}_{timestamp}.tar.gz"
-            with tarfile.open(output_file, "w:gz") as tar:
-                tar.add(export_dir, arcname="wikijs_export")
+            # Stage outside the backups folder, so a failed run leaves no plain pages there.
+            with tempfile.TemporaryDirectory() as tmp:
+                export_dir = Path(tmp) / "wikijs_export"
+                export_dir.mkdir()
+                for page in pages:
+                    page_data = self._fetch_page(graphql_url, headers, page["id"])
+                    self._write_page(export_dir, page_data)
+                try:
+                    with tarfile.open(output_file, "w:gz") as tar:
+                        tar.add(export_dir, arcname="wikijs_export")
+                except BaseException:
+                    # A half-written archive must not pass for a backup.
+                    output_file.unlink(missing_ok=True)
+                    raise
             output_file.chmod(0o600)
-
-            shutil.rmtree(export_dir)
 
             self.cleanup_old_files(
                 backup_dir, f"{self.service_name}_*.tar.gz", context.retention_days
@@ -149,10 +154,18 @@ class WikiJsWorker(BackupWorker):
         return data["data"]["pages"]["single"]
 
     def _write_page(self, export_dir: Path, page: dict) -> None:
-        page_path = page.get("path", "unknown")
+        """Write one page to ``<locale>/<path>.md`` (or ``.html``) inside ``export_dir``.
+
+        The same path can exist once per language, hence the locale folder.
+        """
+        page_path = str(page.get("path") or "unknown")
+        locale = str(page.get("locale") or "")
         content = page.get("content", "")
         content_type = page.get("contentType", "markdown")
         extension = ".html" if content_type == "html" else ".md"
-        file_path = export_dir / f"{page_path}{extension}"
+        file_path = (export_dir / locale / f"{page_path}{extension}").resolve()
+        # The path comes from the server: never let it point outside the export.
+        if not file_path.is_relative_to(export_dir.resolve()):
+            raise BackupError(f"Wiki.js page path {page_path!r} points outside the export")
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content, encoding="utf-8")
