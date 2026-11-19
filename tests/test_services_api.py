@@ -158,3 +158,17 @@ async def test_service_of_a_removed_app_still_lists(tmp_path: Path):
     # It has no settings, so any key is unknown.
     bad = {"updates": {"N8N_URL": "x"}}
     assert (await call(app, "PUT", "/api/services/gone/env-vars", bad))[0] == 400
+
+
+async def test_env_vars_endpoint_never_returns_secret_values(tmp_path: Path):
+    app, _ = make(tmp_path)
+    (tmp_path / ".env").write_text('N8N_URL=http://n8n:5678\nN8N_API_KEY="hunter2-key"\n')
+
+    status, _, body = await call(app, "GET", "/api/env-vars/n8n")
+
+    assert status == 200
+    by_key = {v["key"]: v for v in body}
+    assert by_key["N8N_API_KEY"]["value"] == "***"
+    assert by_key["N8N_API_KEY"]["configured"] is True
+    assert by_key["N8N_URL"]["value"] == "http://n8n:5678"
+    assert "hunter2-key" not in json.dumps(body)
