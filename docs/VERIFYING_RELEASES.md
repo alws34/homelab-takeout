@@ -31,7 +31,9 @@ gh attestation verify "homelab-takeout-$VERSION.tar.gz" \
 ```
 
 This checks that the tarball's sha256 matches an attestation signed by
-`build-release.yml` in this repository, for that tag. To check against the
+`build-release.yml` in this repository, for that tag. In a terminal it ends with
+`✓ Verification succeeded!`; in a script or pipe it prints nothing on success, so
+check the exit status (0) instead. To check against the
 downloaded attestation instead of fetching it from GitHub, add
 `--bundle "homelab-takeout-$VERSION.tar.gz.intoto.jsonl"`.
 
@@ -45,11 +47,27 @@ cosign verify-blob \
   "homelab-takeout-$VERSION.tar.gz"
 ```
 
-To pin the exact tag instead of any `v*` tag, use
-`--certificate-identity "https://github.com/alws34/homelab-takeout/.github/workflows/build-release.yml@refs/tags/v$VERSION"`.
+It prints `Verified OK`. Needs cosign 2.4 or newer (the bundle is in the Sigstore
+bundle v0.3 format). Without cosign installed, run the same command from the
+official image, with the downloaded files in the current folder:
 
-Both commands must print a successful verification. If either fails, do not use
-the tarball.
+```bash
+docker run --rm -v "$PWD:/w:ro" -w /w gcr.io/projectsigstore/cosign:v3.0.6 \
+  verify-blob --bundle "homelab-takeout-$VERSION.tar.gz.sigstore.json" \
+  --certificate-identity "https://github.com/alws34/homelab-takeout/.github/workflows/build-release.yml@refs/tags/v$VERSION" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "homelab-takeout-$VERSION.tar.gz"
+```
+
+To pin the exact tag instead of any `v*` tag, use
+`--certificate-identity "https://github.com/alws34/homelab-takeout/.github/workflows/build-release.yml@refs/tags/v$VERSION"`
+(as in the container example).
+
+Both commands must succeed (exit status 0). If either fails, do not use the
+tarball.
+
+The SBOM (`homelab-takeout-$VERSION.spdx.json`) lists every Python and npm package
+of the release with its version, for checking against advisories.
 
 ## 4. Build from the verified tarball
 
@@ -60,6 +78,9 @@ cp .env.example .env && chmod 600 .env
 mkdir -p backups logs state && chmod 700 backups logs state
 docker compose up -d --build
 ```
+
+The container uses host networking and listens on port 9100, so stop any other
+instance first (`docker compose down` in its folder).
 
 To upgrade an existing install, extract the new tarball next to the old one and
 move your `.env`, `config/`, `backups/`, `logs/` and `state/` across (or copy the
