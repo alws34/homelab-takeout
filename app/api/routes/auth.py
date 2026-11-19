@@ -83,13 +83,17 @@ def install_auth_guard(app: FastAPI, auth: AuthManager) -> None:
 def _status(auth: AuthManager, request: Request) -> dict:
     """What the GUI should show: setup form, login form, or the app."""
     client, headers = _client(request), _headers(request)
+    authenticated = auth.authenticated(client, headers, request.cookies.get(SESSION_COOKIE))
+    # The endpoint is public; the proxy settings are only for the signed-in Settings form.
     return {
         "mode": auth.mode,
         "setup_required": auth.mode == "password" and not auth.password_set,
-        "authenticated": auth.authenticated(client, headers, request.cookies.get(SESSION_COOKIE)),
+        "authenticated": authenticated,
         "user": auth.proxy_user(client, headers) if auth.mode == "proxy" else "",
-        "trusted_proxies": ",".join(str(n) for n in auth.trusted_proxies),
-        "proxy_header": auth.proxy_header,
+        "trusted_proxies": (
+            ",".join(str(n) for n in auth.trusted_proxies) if authenticated else ""
+        ),
+        "proxy_header": auth.proxy_header if authenticated else "",
     }
 
 

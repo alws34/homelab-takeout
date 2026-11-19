@@ -209,3 +209,17 @@ async def test_page_and_static_stay_public(make_app):
     app, _ = make_app()
     assert (await call(app, "GET", "/"))[0] == 200
     assert (await call(app, "GET", "/static/app.js"))[0] == 200
+
+
+async def test_status_shows_proxy_settings_only_when_signed_in(make_app):
+    app, _ = make_app({"AUTH_MODE": "proxy", "AUTH_TRUSTED_PROXIES": "10.0.0.5"})
+
+    _, _, anonymous = await call(app, "GET", "/api/auth/status", client=LAN)
+    as_user = {"remote-user": "alon"}
+    _, _, signed_in = await call(app, "GET", "/api/auth/status", client="10.0.0.5", headers=as_user)
+
+    assert anonymous["mode"] == "proxy"
+    assert anonymous["trusted_proxies"] == ""
+    assert anonymous["proxy_header"] == ""
+    assert signed_in["trusted_proxies"] == "10.0.0.5/32"
+    assert signed_in["proxy_header"] == "Remote-User"
