@@ -52,7 +52,7 @@ bundle v0.3 format). Without cosign installed, run the same command from the
 official image, with the downloaded files in the current folder:
 
 ```bash
-docker run --rm -u "$(id -u)" -v "$PWD:/w:ro" -w /w gcr.io/projectsigstore/cosign:v3.0.6 \
+docker run --rm -v "$PWD:/w:ro" -w /w gcr.io/projectsigstore/cosign:v3.0.6 \
   verify-blob --bundle "homelab-takeout-$VERSION.tar.gz.sigstore.json" \
   --certificate-identity "https://github.com/alws34/homelab-takeout/.github/workflows/build-release.yml@refs/tags/v$VERSION" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
