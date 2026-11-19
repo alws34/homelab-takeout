@@ -13,7 +13,7 @@ releases, CIS Docker Benchmark container items.
 | Locked Bitwarden CLI (integrity hashes, `npm ci`) | `bw/package.json`, `bw/package-lock.json` |
 | Base image pinned by digest | `Dockerfile` |
 | All actions pinned by commit SHA, `contents: read` by default, write scopes per job, no `pull_request_target`, no `github.event.*` in `run:` | `.github/workflows/*` |
-| Dependency update tool (pip, npm, docker, actions; weekly, grouped) | `.github/dependabot.yml` |
+| Dependency update tool (pip, npm, docker, actions; monthly, grouped) | `.github/dependabot.yml` |
 | CI: ruff, tests + coverage, Docker build and smoke test on amd64 + arm64 | `ci.yml` |
 | SAST: CodeQL (Python + Actions), ruff bandit rules, SonarQube Cloud (when token set) | `codeql.yml`, `ci.yml`, `sonar-project.properties` |
 | Scorecard with published results and SARIF upload | `scorecard.yml` |
