@@ -351,7 +351,12 @@ class BackupScheduler:
             "success": state["success"],
             "delivered": state["success"] and all(u.get("ok") for u in uploads.values()),
         }
-        state["history"] = [*previous.get("history", []), run][-_HISTORY_LENGTH:]
+        history = previous.get("history", [])
+        # A run is written twice: right after the backup, then again with its upload
+        # results. The second write replaces the first, so each run is one entry.
+        if history and history[-1].get("finished_at") == run["finished_at"]:
+            history = history[:-1]
+        state["history"] = [*history, run][-_HISTORY_LENGTH:]
         state_dir = _state_root() / service_name
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / _STATE_FILENAME).write_text(json.dumps(state, indent=2))
