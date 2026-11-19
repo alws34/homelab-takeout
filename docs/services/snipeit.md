@@ -8,8 +8,11 @@ Hardware, licenses, accessories, consumables, components, users, locations,
 manufacturers, categories, companies, departments, status labels, suppliers,
 and custom fields — each as a paginated JSON export, bundled into a `tar.gz`.
 
-If every endpoint is unreachable in a run (e.g. wrong URL or dead instance),
-the backup fails loudly instead of silently writing empty files.
+An endpoint this token may not read (403) or this version doesn't have (404) is
+written as `[]` and listed in `skipped.json`. Any other error (a server error, a
+timeout) fails the run, so an incomplete backup is never uploaded or counted towards
+retention. If every endpoint answers 403/404, the URL is probably wrong and the run
+fails too.
 
 ## Setup
 

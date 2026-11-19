@@ -12,7 +12,7 @@ from typing import ClassVar
 import requests
 
 from app.core.context import BackupContext, BackupError, BackupResult
-from app.workers.base import BackupWorker, EnvVarSpec
+from app.workers.base import BackupWorker, EnvVarSpec, skip_reason
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +72,10 @@ class KitchenOwlWorker(BackupWorker):
             (work / "households.json").write_text(
                 json.dumps(households, indent=2, ensure_ascii=False)
             )
+            skipped: dict[str, str] = {}
             for hh in households:
-                _export_household(base_url, headers, hh, work)
+                _export_household(base_url, headers, hh, work, skipped)
+            (work / "skipped.json").write_text(json.dumps(skipped, indent=2))
             return self.archive_dir(context, started_at, work, "API export")
 
 
@@ -87,8 +89,13 @@ def _get(base_url: str, headers: dict, path: str) -> dict | list:
     return resp.json()
 
 
-def _export_household(base_url: str, headers: dict, hh: dict, work: Path) -> None:
-    """Write one household's recipes, items and shopping lists into ``household_<id>/``."""
+def _export_household(
+    base_url: str, headers: dict, hh: dict, work: Path, skipped: dict[str, str]
+) -> None:
+    """Write one household's recipes, items and shopping lists into ``household_<id>/``.
+
+    A section answering 403/404 is recorded in ``skipped``; any other error fails the run.
+    """
     hh_id = hh.get("household", {}).get("id") or hh.get("id")
     if not hh_id:
         return
@@ -98,7 +105,10 @@ def _export_household(base_url: str, headers: dict, hh: dict, work: Path) -> Non
         try:
             data = _get(base_url, headers, f"/api/household/{hh_id}/{endpoint}")
         except requests.RequestException as e:
-            logger.warning(f"kitchenowl: could not fetch {name} for household {hh_id}: {e}")
+            if (reason := skip_reason(e)) is None:
+                raise BackupError(f"Failed to fetch {name} for household {hh_id}: {e}") from e
+            logger.warning(f"kitchenowl: skipping {name} for household {hh_id}: {reason}")
+            skipped[f"household_{hh_id}/{name}"] = reason
             continue
         (hh_dir / f"{name}.json").write_text(json.dumps(data, indent=2, ensure_ascii=False))
         if name == "recipes":

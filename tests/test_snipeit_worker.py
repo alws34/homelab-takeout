@@ -36,7 +36,7 @@ def test_all_endpoints_unreachable_raises(tmp_path: Path) -> None:
     worker = SnipeItWorker({"name": "snipeit", "type": "snipeit", "options": {}})
     with patch("app.workers.snipeit.requests.get", side_effect=requests.ConnectionError("dead")):
         ctx = _ctx(tmp_path)
-        with pytest.raises(BackupError, match="All Snipe-IT endpoints failed"):
+        with pytest.raises(BackupError, match="Snipe-IT hardware failed: dead"):
             worker.run(ctx)
 
 
@@ -73,6 +73,8 @@ def test_pages_through_endpoints_and_skips_forbidden_ones(
         files = {Path(m.name).name: json.load(tar.extractfile(m)) for m in tar if m.isfile()}
     assert files["hardware.json"] == hardware
     assert files["users.json"] == []
+    assert list(files["skipped.json"]) == ["users"]
+    assert files["skipped.json"]["users"].startswith("HTTP 403")
     assert files["fields.json"] == [{"id": "f"}]
 
 
@@ -84,4 +86,31 @@ def test_rejected_api_key_stops_the_backup(tmp_path: Path) -> None:
         worker = SnipeItWorker({"name": "snipeit", "type": "snipeit"})
         ctx = _ctx(tmp_path)
         with pytest.raises(BackupError, match="SNIPEIT_API_KEY is invalid or expired"):
+            worker.run(ctx)
+
+
+def test_an_endpoint_that_errors_fails_the_run(tmp_path: Path) -> None:
+    """Only 403/404 are skippable: a 5xx on one endpoint fails the whole run."""
+
+    def route(method: str, url: str, **kw: object) -> requests.Response:
+        if url.endswith("/users"):
+            return _resp(url, {"status": "error"}, status=500)
+        return _resp(url, {"total": 0, "rows": []})
+
+    with patch("requests.Session.request", side_effect=route):
+        worker = SnipeItWorker({"name": "snipeit", "type": "snipeit"})
+        ctx = _ctx(tmp_path)
+        with pytest.raises(BackupError, match="Snipe-IT users failed"):
+            worker.run(ctx)
+    assert not list((tmp_path / "backups").glob("**/*.tar.gz"))
+
+
+def test_every_endpoint_missing_points_at_the_url(tmp_path: Path) -> None:
+    with patch(
+        "requests.Session.request",
+        side_effect=lambda method, url, **kw: _resp(url, {"status": "error"}, status=404),
+    ):
+        worker = SnipeItWorker({"name": "snipeit", "type": "snipeit"})
+        ctx = _ctx(tmp_path)
+        with pytest.raises(BackupError, match="check SNIPEIT_URL"):
             worker.run(ctx)

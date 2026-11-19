@@ -33,16 +33,40 @@ def fetch_json(session: requests.Session, method: str, url: str, **kwargs: objec
         raise BackupError(f"{method} {url} returned non-JSON: {resp.text[:200]!r}") from e
 
 
+def _http_response(error: BaseException) -> requests.Response | None:
+    """The response behind an ``HTTPError``, raw or wrapped in a ``BackupError``."""
+    for e in (error, error.__cause__):
+        if isinstance(e, requests.HTTPError) and e.response is not None:
+            return e.response
+    return None
+
+
 def http_status(error: BaseException) -> int | None:
-    """The HTTP status behind a ``fetch_json`` error, or None (timeout, refused, bad JSON).
+    """The HTTP status behind an error, or None (timeout, refused, bad JSON).
 
     Use this rather than looking for "403" in the message: the message also holds the
     URL, so a server on port 8403 would match.
     """
-    cause = error.__cause__
-    if isinstance(cause, requests.HTTPError) and cause.response is not None:
-        return cause.response.status_code
-    return None
+    response = _http_response(error)
+    return response.status_code if response is not None else None
+
+
+# An optional section answering 403 (this key may not see it) or 404 (this version of
+# the app doesn't have it) is left out and listed in skipped.json.
+SKIPPABLE_STATUSES = frozenset({403, 404})
+
+
+def skip_reason(error: BaseException) -> str | None:
+    """Why a failed optional section may be left out, or None if the run must fail.
+
+    Anything but 403/404 (a 5xx, a timeout, an HTML page instead of JSON) means the data
+    exists but this run didn't get it. Reporting that run as a success would let remote
+    retention prune complete backups in favour of an incomplete one.
+    """
+    response = _http_response(error)
+    if response is None or response.status_code not in SKIPPABLE_STATUSES:
+        return None
+    return f"HTTP {response.status_code}: {response.text[:200]}"
 
 
 @dataclass

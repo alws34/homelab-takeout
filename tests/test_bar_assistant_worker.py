@@ -84,6 +84,7 @@ def test_exports_one_folder_per_bar(tmp_path: Path, caplog: pytest.LogCaptureFix
     assert files["bar_home/tags.json"] == {"not": "a list"}
     assert "bar_home/collections.json" not in files
     assert "skipping collections" in caplog.text
+    assert set(files["skipped.json"]) == {"bar_home/collections", "bar_2/collections"}
 
 
 @pytest.mark.parametrize(
@@ -155,3 +156,28 @@ def test_follows_every_page(tmp_path: Path) -> None:
         {"id": 2},
         {"id": 3},
     ]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [{"status": 500}, {"status": 503}, {"raise": requests.Timeout("read timed out")}],
+    ids=["500", "503", "timeout"],
+)
+def test_an_endpoint_that_errors_fails_the_run(tmp_path: Path, failure: dict) -> None:
+    """Only 403/404 are skippable: a partial backup must never count as a success."""
+
+    def route(method: str, url: str, **kw: object) -> requests.Response:
+        if url.endswith("/api/bars"):
+            return _resp(url, {"data": BARS})
+        if url.endswith("/api/ingredients"):
+            if "raise" in failure:
+                raise failure["raise"]
+            return _resp(url, {}, status=failure["status"])
+        return _resp(url, {"data": []})
+
+    with patch("requests.Session.request", side_effect=route):
+        worker = _worker()
+        ctx = _ctx(tmp_path, ENV)
+        with pytest.raises(BackupError, match="Failed to fetch ingredients"):
+            worker.run(ctx)
+    assert not list((tmp_path / "backups").glob("**/*.tar.gz"))
