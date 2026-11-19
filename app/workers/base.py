@@ -33,6 +33,18 @@ def fetch_json(session: requests.Session, method: str, url: str, **kwargs: objec
         raise BackupError(f"{method} {url} returned non-JSON: {resp.text[:200]!r}") from e
 
 
+def http_status(error: BaseException) -> int | None:
+    """The HTTP status behind a ``fetch_json`` error, or None (timeout, refused, bad JSON).
+
+    Use this rather than looking for "403" in the message: the message also holds the
+    URL, so a server on port 8403 would match.
+    """
+    cause = error.__cause__
+    if isinstance(cause, requests.HTTPError) and cause.response is not None:
+        return cause.response.status_code
+    return None
+
+
 @dataclass
 class EnvVarSpec:
     """Describes one environment variable a worker or destination requires."""

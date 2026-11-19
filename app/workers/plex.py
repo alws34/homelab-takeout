@@ -9,7 +9,7 @@ from typing import ClassVar
 import requests
 
 from app.core.context import BackupContext, BackupError, BackupResult
-from app.workers.base import BackupWorker, EnvVarSpec, fetch_json
+from app.workers.base import BackupWorker, EnvVarSpec, fetch_json, http_status
 
 _PAGE_SIZE = 500
 
@@ -87,7 +87,7 @@ class PlexWorker(BackupWorker):
             try:
                 server = get("/")
             except BackupError as e:
-                if "401" in str(e):
+                if http_status(e) == 401:
                     raise BackupError(
                         "Plex rejected PLEX_TOKEN (401 Unauthorized). Copy a fresh "
                         "X-Plex-Token of the server owner account."
