@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
@@ -209,3 +210,28 @@ async def test_unsafe_service_name_never_becomes_a_path(tmp_path: Path, monkeypa
     assert await scheduler.run_service({"name": "../../etc", "type": "n8n"}) is None
     assert scheduler.get_state("../../etc") is None
     assert not (tmp_path / "etc").exists()
+
+
+async def test_schedule_change_takes_effect_without_waiting_for_the_old_time(
+    config_file: Path, registry: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Moving the daily time earlier must not wait for the previously computed run."""
+    scheduler = BackupScheduler(str(config_file), registry)
+    runs: list[str] = []
+
+    async def fake_run_all() -> None:
+        runs.append("run")
+
+    waits = iter([24 * 3600.0, 0.0])
+    monkeypatch.setattr(scheduler, "_run_all_services", fake_run_all)
+    monkeypatch.setattr(scheduler, "_seconds_until_next_run", lambda: next(waits, 24 * 3600.0))
+
+    task = asyncio.create_task(scheduler.run_forever())
+    await asyncio.sleep(0.05)
+    assert runs == []  # waiting for the original, far-away time
+
+    scheduler.update_settings("01:00", 0, False, 7, 5)
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    assert runs == ["run"]
