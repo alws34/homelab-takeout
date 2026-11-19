@@ -40,12 +40,20 @@ LOCKOUT_SECONDS = 15 * 60
 
 # OWASP Password Storage Cheat Sheet: scrypt N=2^16, r=8, p=2 (64 MiB per check).
 _SCRYPT = {"n": 2**16, "r": 8, "p": 2, "maxmem": 128 * 1024 * 1024, "dklen": 32}
+# At most two checks at once: a flood of login requests queues here instead of
+# allocating 64 MiB per worker thread (a few GiB on a small box).
+_SCRYPT_SLOTS = threading.BoundedSemaphore(2)
+
+
+def _scrypt(password: str, salt: bytes) -> bytes:
+    with _SCRYPT_SLOTS:
+        return hashlib.scrypt(password.encode(), salt=salt, **_SCRYPT)
 
 
 def hash_password(password: str) -> str:
     """Return ``scrypt$<salt>$<hash>`` for storage."""
     salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt, **_SCRYPT)
+    digest = _scrypt(password, salt)
     return "scrypt$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(digest).decode()
 
 
@@ -55,7 +63,7 @@ def verify_password(password: str, stored: str) -> bool:
         scheme, salt_b64, digest_b64 = stored.split("$")
         if scheme != "scrypt":
             return False
-        digest = hashlib.scrypt(password.encode(), salt=base64.b64decode(salt_b64), **_SCRYPT)
+        digest = _scrypt(password, base64.b64decode(salt_b64))
         return hmac.compare_digest(digest, base64.b64decode(digest_b64))
     except ValueError:
         return False
@@ -168,10 +176,19 @@ class AuthManager:
         count, until = self._failures.get(client, (0, 0.0))
         return max(int(until - time.monotonic()), 0) if count >= MAX_FAILURES else 0
 
-    def record_failure(self, client: str) -> None:
+    def record_attempt(self, client: str) -> None:
+        """Count an attempt *before* checking it.
+
+        Checking takes a while (scrypt runs in a thread), so counting only failures would
+        let a burst of parallel guesses all pass ``locked_for`` before the first one is
+        counted. ``record_success`` clears the count again.
+        """
         count, _ = self._failures.get(client, (0, 0.0))
-        count += 1
-        self._failures[client] = (count, time.monotonic() + LOCKOUT_SECONDS)
+        self._failures[client] = (count + 1, time.monotonic() + LOCKOUT_SECONDS)
+
+    def record_failure(self, client: str) -> None:
+        """Log a wrong password or setup code (already counted by ``record_attempt``)."""
+        count, _ = self._failures.get(client, (0, 0.0))
         logger.warning(f"Failed GUI login from {client} ({count} in a row)")
 
     def record_success(self, client: str) -> None:

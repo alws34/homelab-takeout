@@ -21,7 +21,7 @@ applications on a schedule. It exposes a web GUI for configuration and monitorin
 │            │ BackupResult                               │    │
 │   ┌────────▼────────┐    ┌──────────────────┐    ┌─────▼──┐ │
 │   │   Destinations  │    │  state/*.json    │    │ static │ │
-│   │  (Google Drive) │    │  (last result)   │    │  GUI   │ │
+│   │ (Drive, SFTP…)  │    │  (last result)   │    │  GUI   │ │
 │   └─────────────────┘    └──────────────────┘    └────────┘ │
 └─────────────────────────────────────────────────────────────┘
 
@@ -51,6 +51,7 @@ Two scheduling modes (set in `config/services.json` → `schedule`):
 | Fixed interval | `interval_hours: N` | Wakes every N hours                |
 
 `run_on_start: true` triggers an immediate run on container start (useful for dev).
+Saving the schedule in the GUI wakes the loop, so a new time applies right away.
 
 ## Worker Execution
 
@@ -83,7 +84,7 @@ BackupResult { success, message, output_files, timing }
        │
        ├─► _persist_state()  →  state/{service}/last_result.json
        │
-       └─► _upload_to_destinations()  →  Google Drive (if enabled)
+       └─► _upload_to_destinations()  →  every enabled destination
 ```
 
 ## State Persistence
@@ -118,20 +119,41 @@ without a restart.
 
 ## API Surface
 
-| Method | Path                              | Purpose                          |
-|--------|-----------------------------------|----------------------------------|
-| GET    | `/api/services`                   | All services + last state        |
-| POST   | `/api/services/{name}/trigger`    | Manual run                       |
-| PUT    | `/api/services/{name}/enabled`    | Toggle enabled flag              |
-| GET    | `/api/env-vars/{type}`            | Env var specs for a worker type  |
-| PUT    | `/api/env-vars/{type}`            | Write values to `.env`           |
-| GET    | `/api/destinations`               | Destination list + auth status   |
-| PUT    | `/api/destinations/{name}`        | Update destination config        |
-| POST   | `/api/destinations/google-drive/authorize` | Start OAuth2 flow         |
-| POST   | `/api/destinations/google-drive/complete`  | Complete OAuth2 flow          |
-| GET    | `/api/settings`                   | Schedule + retention settings    |
-| PUT    | `/api/settings`                   | Update settings                  |
-| GET    | `/`                               | Web GUI (static HTML/JS/CSS)     |
+Everything under `/api/` needs a signed-in session (or a trusted proxy header in
+proxy mode), except the four public paths marked *public*.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/auth/status` | *public* — mode, setup needed, signed in? |
+| POST   | `/api/auth/setup` | *public* — first admin password (needs the setup code) |
+| POST   | `/api/auth/login` | *public* — sign in (5 tries, then 15 min lockout) |
+| POST   | `/api/auth/logout` | End this session |
+| POST   | `/api/auth/password` | Change the admin password |
+| PUT    | `/api/auth/settings` | Switch password / proxy / off mode |
+| GET    | `/api/services` | Dashboard services + last state (secrets masked) |
+| POST   | `/api/services` | Add an app (or another instance of one) |
+| DELETE | `/api/services/{name}` | Remove an app (settings and backups stay) |
+| PUT    | `/api/services/{name}/env-vars` | Save one service's settings to `.env` |
+| PUT    | `/api/services/{name}/label` | Rename on the dashboard |
+| PUT    | `/api/services/{name}/enabled` | Toggle enabled flag |
+| POST   | `/api/services/{name}/trigger` | Manual run |
+| POST   | `/api/services/trigger-all` | Run every enabled, idle service |
+| GET    | `/api/catalog` | Every app this build can back up |
+| GET    | `/api/env-vars/{type}` | Env var specs per worker type (older API; secrets masked) |
+| PUT    | `/api/env-vars/{type}` | Write a worker type's values to `.env` (older API) |
+| GET    | `/api/destinations` | Destinations, settings (secrets masked), login status |
+| PUT    | `/api/destinations/{type}/env-vars` | Save a destination's settings |
+| POST   | `/api/destinations/{type}/test` | Test the connection (returns an SFTP host key to trust) |
+| POST   | `/api/destinations/{type}/login` | Start a device-code login (Google, Microsoft) |
+| GET    | `/api/destinations/logins/{id}` | Poll a device-code login |
+| DELETE | `/api/destinations/{type}/login` | Revoke and forget stored tokens |
+| POST   | `/api/destinations/sftp/key` | Store a pasted SSH private key (0600) |
+| POST   | `/api/destinations/google_drive/credentials` | Upload your own OAuth client JSON |
+| POST   | `/api/destinations/google_drive/oauth/start` | Start your-own-client OAuth (PKCE) |
+| GET    | `/api/destinations/google_drive/oauth/callback` | *public* — OAuth redirect; the one-time state authenticates it |
+| GET    | `/api/settings` | Schedule + retention settings |
+| PUT    | `/api/settings` | Update settings |
+| GET    | `/`, `/static/*` | Web GUI (no data in it; public so the login form loads) |
 
 ## Worker Catalogue
 
@@ -152,20 +174,34 @@ without a restart.
 | `plex`                        | Plex                 | REST API (X-Plex-Token) + tar archive |
 | `jellyfin`                    | Jellyfin             | REST API (API key) + tar archive |
 | `uptimekuma`                  | Uptime Kuma          | Socket.IO API (login) + tar archive |
+| `homeassistant`               | Home Assistant       | WebSocket API: native backup, downloaded `.tar` |
+| `openproject`                 | OpenProject          | REST API (API key) + tar archive |
+| `openwebui`                   | Open WebUI           | REST API (API key) + tar archive |
+| `qbittorrent`                 | qBittorrent          | Web API (login) + tar archive with `.torrent` files |
+| `sparkyfitness`               | SparkyFitness        | REST API (API key) + tar archive |
+| `manyfold`                    | Manyfold             | REST API (OAuth client) + tar archive |
 
 See [`docs/services/`](docs/services/) for what each worker backs up and how
 to configure its credentials.
 
 ## Destination Catalogue
 
-| Destination    | Auth method         | Upload trigger          |
-|----------------|---------------------|-------------------------|
-| Google Drive   | OAuth2 (user flow)  | After every successful run |
+Every enabled destination gets each successful run's files, then keeps the newest
+`remote_keep_count` per service (only files named `<service>_...` are ever pruned).
+
+| Destination    | Auth method                                         |
+|----------------|-----------------------------------------------------|
+| Google Drive   | Device-code login, or your own OAuth client (PKCE)  |
+| OneDrive       | Device-code login (Microsoft public client)         |
+| SFTP           | Password or SSH key; host key pinned on first test  |
+| SMB            | Username and password                               |
+| Local folder   | None (a path inside the container, e.g. a NAS mount) |
 
 ## Key Design Decisions
 
-**Single container, no message queue.** Workers run sequentially per trigger.
-Simple, auditable, no moving parts. Suitable for personal/homelab scale.
+**Single container, no message queue.** A scheduled run starts every enabled
+service at once (`asyncio.gather`), each worker in its own executor thread; one
+service never runs twice at the same time. Simple, auditable, no moving parts. Suitable for personal/homelab scale.
 
 **Blocking workers in thread pool.** Workers use `subprocess` and `requests` —
 both blocking. Rather than converting everything to async (complex, error-prone),

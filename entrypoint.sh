@@ -29,6 +29,10 @@ if [ -n "$bad" ]; then
     exit 1
 fi
 
+# Same as UMask=0077 in the systemd unit: backups, tokens, state and config are created
+# readable by this user only, with no window before the app's own chmod 600.
+umask 077
+
 if [ ! -f "$ENV_FILE" ]; then
     mkdir -p "$(dirname "$ENV_FILE")"
     touch "$ENV_FILE"

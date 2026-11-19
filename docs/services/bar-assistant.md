@@ -8,6 +8,10 @@ For every bar on the instance: cocktails, ingredients, glasses, tags,
 utensils, cocktail methods, and collections, plus the top-level bar list
 itself. One subfolder per bar inside a single `tar.gz`.
 
+An endpoint this token may not read (403) or this version doesn't have (404) is
+left out and listed in `skipped.json`. Any other error (a server error, a timeout)
+fails the run, so an incomplete backup is never uploaded or counted towards retention.
+
 ## Setup
 
 1. Open your user profile in Bar Assistant → **API tokens** → create a token.

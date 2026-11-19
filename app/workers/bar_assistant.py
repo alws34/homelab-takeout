@@ -12,7 +12,7 @@ from typing import ClassVar
 import requests
 
 from app.core.context import BackupContext, BackupError, BackupResult
-from app.workers.base import BackupWorker, EnvVarSpec
+from app.workers.base import BackupWorker, EnvVarSpec, skip_reason
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,9 @@ class BarAssistantWorker(BackupWorker):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             (work / "bars.json").write_text(json.dumps(bars, indent=2, ensure_ascii=False))
-            total_records = sum(_export_bar(base_url, headers, bar, work) for bar in bars)
+            skipped: dict[str, str] = {}
+            total_records = sum(_export_bar(base_url, headers, bar, work, skipped) for bar in bars)
+            (work / "skipped.json").write_text(json.dumps(skipped, indent=2))
             return self.archive_dir(context, started_at, work, f"{total_records} records exported")
 
 
@@ -114,7 +116,7 @@ def _unwrap(body: dict | list) -> list | dict:
     return body.get("data", body) if isinstance(body, dict) else body
 
 
-def _export_bar(base_url: str, headers: dict, bar: dict, work: Path) -> int:
+def _export_bar(base_url: str, headers: dict, bar: dict, work: Path, skipped: dict) -> int:
     """Export one bar into ``bar_<slug>/``; return how many records were written."""
     bar_id = bar.get("id")
     bar_slug = bar.get("slug") or str(bar_id)
@@ -122,7 +124,9 @@ def _export_bar(base_url: str, headers: dict, bar: dict, work: Path) -> int:
     bar_dir.mkdir()
     logger.info(f"bar_assistant: exporting bar {bar_slug!r} (id={bar_id})")
     bar_headers = {**headers, "Bar-Assistant-Bar-Id": str(bar_id)}
-    return sum(_export_endpoint(base_url, bar_headers, ep, bar_dir) for ep in _BAR_ENDPOINTS)
+    return sum(
+        _export_endpoint(base_url, bar_headers, ep, bar_dir, skipped) for ep in _BAR_ENDPOINTS
+    )
 
 
 def _fetch_all(base_url: str, headers: dict, endpoint: str) -> list | dict:
@@ -137,12 +141,20 @@ def _fetch_all(base_url: str, headers: dict, endpoint: str) -> list | dict:
     return records
 
 
-def _export_endpoint(base_url: str, headers: dict, endpoint: str, bar_dir: Path) -> int:
-    """Write one endpoint of a bar to JSON; return its record count (0 if skipped)."""
+def _export_endpoint(
+    base_url: str, headers: dict, endpoint: str, bar_dir: Path, skipped: dict[str, str]
+) -> int:
+    """Write one endpoint of a bar to JSON; return its record count (0 if skipped).
+
+    An endpoint answering 403/404 is recorded in ``skipped``; any other error fails the run.
+    """
     try:
         records = _fetch_all(base_url, headers, endpoint)
     except requests.RequestException as e:
-        logger.warning(f"bar_assistant: skipping {endpoint}: {e}")
+        if (reason := skip_reason(e)) is None:
+            raise BackupError(f"Failed to fetch {endpoint} for {bar_dir.name}: {e}") from e
+        logger.warning(f"bar_assistant: skipping {endpoint}: {reason}")
+        skipped[f"{bar_dir.name}/{endpoint}"] = reason
         return 0
     out = bar_dir / f"{endpoint.replace('-', '_')}.json"
     out.write_text(json.dumps(records, indent=2, ensure_ascii=False))

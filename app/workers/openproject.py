@@ -9,7 +9,7 @@ from urllib.parse import urljoin
 import requests
 
 from app.core.context import BackupContext, BackupError, BackupResult
-from app.workers.base import BackupWorker, EnvVarSpec, fetch_json
+from app.workers.base import BackupWorker, EnvVarSpec, fetch_json, http_status
 
 # The server caps this at its "maximum API page size" setting; the paging loop copes with that.
 _PAGE_SIZE = 1000
@@ -71,7 +71,7 @@ class OpenProjectWorker(BackupWorker):
             try:
                 projects = collect("api/v3/projects")
             except BackupError as e:
-                if "401" in str(e):
+                if http_status(e) == 401:
                     raise BackupError(
                         "OpenProject rejected OPENPROJECT_API_TOKEN (401). Generate a new token "
                         "under My account → Access tokens → API."
@@ -86,7 +86,7 @@ class OpenProjectWorker(BackupWorker):
                 try:
                     return collect(href)
                 except BackupError as e:
-                    if "403" not in str(e):
+                    if http_status(e) != 403:
                         raise
                     skipped[name] = "not allowed for this token (403)"
                     return []

@@ -47,14 +47,16 @@ def _read(archive: Path) -> dict[str, object]:
         }
 
 
-def _run(tmp_path: Path, households: object, failing: str = "") -> tuple[Path, dict]:
+def _run(
+    tmp_path: Path, households: object, failing: str = "", status: int = 404
+) -> tuple[Path, dict]:
     def route(method: str, url: str, **kw: object) -> requests.Response:
         assert kw["headers"]["Authorization"] == "Bearer t0k"
         path = url.removeprefix("http://owl")
         if path == "/api/household":
             return _resp(url, households)
         if path == failing:
-            return _resp(url, {"msg": "boom"}, status=500)
+            return _resp(url, {"msg": "boom"}, status=status)
         return _resp(url, [path])
 
     with patch("requests.Session.request", side_effect=route):
@@ -74,11 +76,13 @@ def test_exports_every_household(tmp_path: Path, caplog: pytest.LogCaptureFixtur
     assert files["household_1/recipes.json"] == ["/api/household/1/recipe"]
     assert files["household_1/items.json"] == ["/api/household/1/item"]
     assert files["household_1/shoppinglists.json"] == ["/api/household/1/shoppinglist"]
-    # One failing section only costs that section.
+    # A section the server doesn't have (404) only costs that section, and says so.
     assert files["household_2/recipes.json"] == ["/api/household/2/recipe"]
     assert "household_2/items.json" not in files
     assert "household_2/shoppinglists.json" in files
-    assert "could not fetch items for household 2" in caplog.text
+    assert "skipping items for household 2" in caplog.text
+    assert list(files["skipped.json"]) == ["household_2/items"]
+    assert files["skipped.json"]["household_2/items"].startswith("HTTP 404")
     assert not any(name.startswith("household_None") for name in files)
 
 
@@ -105,3 +109,24 @@ def test_missing_setting(tmp_path: Path, missing: str) -> None:
     ctx = _ctx(tmp_path, {**ENV, missing: ""})
     with pytest.raises(BackupError, match=f"{missing} is not set"):
         worker.run(ctx)
+
+
+@pytest.mark.parametrize("status", [500, 502, 429])
+def test_a_section_that_errors_fails_the_run(tmp_path: Path, status: int) -> None:
+    """Only 403/404 are skippable: a partial backup must never count as a success."""
+    with pytest.raises(BackupError, match="Failed to fetch items for household 1"):
+        _run(tmp_path, [{"id": 1}], failing="/api/household/1/item", status=status)
+    assert not list((tmp_path / "backups").glob("**/*.tar.gz"))
+
+
+def test_a_timeout_fails_the_run(tmp_path: Path) -> None:
+    def route(method: str, url: str, **kw: object) -> requests.Response:
+        if url.endswith("/api/household"):
+            return _resp(url, [{"id": 1}])
+        raise requests.Timeout("read timed out")
+
+    with patch("requests.Session.request", side_effect=route):
+        worker = _worker()
+        ctx = _ctx(tmp_path, ENV)
+        with pytest.raises(BackupError, match="read timed out"):
+            worker.run(ctx)

@@ -7,6 +7,10 @@ Worker type: `kitchenowl` · Method: REST API
 For every household: recipes, the item/ingredient catalogue, and shopping
 lists, bundled into a `tar.gz`.
 
+An endpoint this token may not read (403) or this version doesn't have (404) is
+left out and listed in `skipped.json`. Any other error (a server error, a timeout)
+fails the run, so an incomplete backup is never uploaded or counted towards retention.
+
 ## Setup
 
 1. Get a long-lived token via KitchenOwl **Settings → Account → Long-Lived

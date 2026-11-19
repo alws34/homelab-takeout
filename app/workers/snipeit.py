@@ -12,7 +12,7 @@ from typing import ClassVar
 import requests
 
 from app.core.context import BackupContext, BackupError, BackupResult
-from app.workers.base import BackupWorker, EnvVarSpec
+from app.workers.base import BackupWorker, EnvVarSpec, skip_reason
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +82,15 @@ class SnipeItWorker(BackupWorker):
 
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            counts = [_export(base_url, headers, endpoint, work) for endpoint in _ENDPOINTS]
+            skipped: dict[str, str] = {}
+            counts = [
+                _export(base_url, headers, endpoint, work, skipped) for endpoint in _ENDPOINTS
+            ]
             if all(count is None for count in counts):
-                raise BackupError(f"All Snipe-IT endpoints failed; check SNIPEIT_URL ({base_url})")
+                raise BackupError(
+                    f"Every Snipe-IT endpoint answered 403/404; check SNIPEIT_URL ({base_url})"
+                )
+            (work / "skipped.json").write_text(json.dumps(skipped, indent=2))
             total_records = sum(count or 0 for count in counts)
             return self.archive_dir(context, started_at, work, f"{total_records} records exported")
 
@@ -115,15 +121,24 @@ def _fetch_all(base_url: str, headers: dict, endpoint: str) -> list:
             return records
 
 
-def _export(base_url: str, headers: dict, endpoint: str, work: Path) -> int | None:
-    """Write one endpoint to ``<endpoint>.json``; return its record count, None if skipped."""
+def _export(
+    base_url: str, headers: dict, endpoint: str, work: Path, skipped: dict[str, str]
+) -> int | None:
+    """Write one endpoint to ``<endpoint>.json``; return its record count, None if skipped.
+
+    An endpoint answering 403/404 is written as ``[]`` and recorded in ``skipped``; any
+    other error fails the run.
+    """
     out = work / f"{endpoint}.json"
     try:
         records = _fetch_all(base_url, headers, endpoint)
     except requests.RequestException as e:
         if isinstance(e, requests.HTTPError) and _unauthorized(e):
             raise BackupError("SNIPEIT_API_KEY is invalid or expired (401 Unauthorized)") from e
-        logger.warning(f"snipeit: skipping {endpoint}: {e}")
+        if (reason := skip_reason(e)) is None:
+            raise BackupError(f"Snipe-IT {endpoint} failed: {e}") from e
+        logger.warning(f"snipeit: skipping {endpoint}: {reason}")
+        skipped[endpoint] = reason
         out.write_text("[]")
         return None
     out.write_text(json.dumps(records, indent=2, ensure_ascii=False))

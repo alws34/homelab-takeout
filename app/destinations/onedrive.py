@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from pathlib import Path
@@ -166,23 +167,13 @@ class OneDriveDestination(BackupDestination):
             json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
         ).json()
         upload_url = session["uploadUrl"]
-        with file_path.open("rb") as f:
-            offset = 0
-            while offset < size:
-                chunk = f.read(_CHUNK)
-                end = offset + len(chunk) - 1
-                # The pre-authenticated upload URL must NOT get an Authorization header.
-                resp = requests.put(
-                    upload_url,
-                    data=chunk,
-                    headers={"Content-Range": f"bytes {offset}-{end}/{size}"},
-                    timeout=300,
-                )
-                if resp.status_code >= 400:
-                    raise BackupError(
-                        f"OneDrive upload failed {resp.status_code}: {resp.text[:200]}"
-                    )
-                offset += len(chunk)
+        try:
+            _upload_chunks(file_path, size, upload_url)
+        except BackupError:
+            # Nobody else may finish this session: its URL needs no token.
+            with contextlib.suppress(requests.RequestException):
+                requests.delete(upload_url, timeout=30)
+            raise
 
     def list_names(self, service_name: str) -> list[str]:
         url: str | None = f"{self._item(service_name)}/children?$select=name&$top=999"
@@ -203,3 +194,27 @@ class OneDriveDestination(BackupDestination):
         self._graph("GET", _APPROOT)
         account = self.login_status(self.env)["account"] or "your Microsoft account"
         return f"Connected as {account}; files go to Apps/Homelab Takeout."
+
+
+def _upload_chunks(file_path: Path, size: int, upload_url: str) -> None:
+    """PUT the file to an upload session in ``_CHUNK``-sized pieces."""
+    with file_path.open("rb") as f:
+        offset = 0
+        while offset < size:
+            chunk = f.read(_CHUNK)
+            end = offset + len(chunk) - 1
+            # The pre-authenticated upload URL must NOT get an Authorization header.
+            try:
+                resp = requests.put(
+                    upload_url,
+                    data=chunk,
+                    headers={"Content-Range": f"bytes {offset}-{end}/{size}"},
+                    timeout=300,
+                )
+            except requests.RequestException as e:
+                # requests puts the URL in its message, and the URL alone is enough to
+                # write to the session: report the error type without it.
+                raise BackupError(f"OneDrive upload failed: {type(e).__name__}") from None
+            if resp.status_code >= 400:
+                raise BackupError(f"OneDrive upload failed {resp.status_code}: {resp.text[:200]}")
+            offset += len(chunk)

@@ -6,6 +6,18 @@ from pathlib import Path
 from threading import Lock
 
 
+def _unquote(value: str) -> str:
+    """Strip one pair of matching outer quotes (``update`` writes ``KEY="value"``).
+
+    Only the outer pair goes: a secret that itself starts or ends with a quote
+    character must read back exactly as it was saved.
+    """
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
 def _key_of(line: str) -> str | None:
     """The key a ``KEY=value`` line sets, or None for blanks, comments and other lines."""
     stripped = line.strip()
@@ -32,7 +44,7 @@ class EnvManager:
                 continue
             if "=" in stripped:
                 key, _, value = stripped.partition("=")
-                result[key.strip()] = value.strip().strip('"').strip("'")
+                result[key.strip()] = _unquote(value)
         return result
 
     def update(self, updates: dict[str, str]) -> None:
