@@ -148,6 +148,7 @@ def create_router(auth: AuthManager) -> APIRouter:
         if auth.password_set:
             raise HTTPException(status_code=409, detail="An admin password already exists.")
         _check_lock(auth, client)
+        auth.record_attempt(client)
         if not auth.check_setup_code(body.setup_code):
             auth.record_failure(client)
             raise HTTPException(
@@ -163,6 +164,7 @@ def create_router(auth: AuthManager) -> APIRouter:
         """Check the admin password and start a session."""
         client = _client(request)
         _check_lock(auth, client)
+        auth.record_attempt(client)  # before the await, so parallel guesses count too
         if not await asyncio.to_thread(auth.check_password, body.password):
             auth.record_failure(client)
             raise HTTPException(status_code=401, detail="Wrong password.")
